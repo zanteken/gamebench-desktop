@@ -4,6 +4,7 @@
 mod fps_monitor;
 mod game_detect;
 mod hardware;
+mod logs;
 
 use tauri::Manager;
 
@@ -25,6 +26,9 @@ fn main() {
             // 游戏检测
             game_detect::scan_running_games,
             game_detect::get_known_games,
+            // 日志
+            logs::read_logs,
+            logs::clear_logs,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

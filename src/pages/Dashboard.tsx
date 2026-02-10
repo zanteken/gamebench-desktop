@@ -1,69 +1,32 @@
-import { useEffect, useState } from "react";
 import { Cpu, MonitorSmartphone, MemoryStick, RefreshCw, Loader2, Gamepad2 } from "lucide-react";
-import { detectHardware, scanRunningGames, onGameDetected, onGameExited } from "../lib/tauri-api";
 import type { HardwareInfo, DetectedGame } from "../lib/types";
 
-export default function Dashboard() {
-  const [hardware, setHardware] = useState<HardwareInfo | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [runningGames, setRunningGames] = useState<DetectedGame[]>([]);
+interface DashboardProps {
+  hardware: HardwareInfo | null;
+  hardwareLoading: boolean;
+  hardwareError: string | null;
+  runningGames: DetectedGame[];
+  onRefreshHardware: () => void;
+}
 
-  const loadHardware = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const hw = await detectHardware();
-      setHardware(hw);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadGames = async () => {
-    try {
-      const games = await scanRunningGames();
-      setRunningGames(games);
-    } catch (_e) {
-      // 静默失败
-    }
-  };
-
-  useEffect(() => {
-    loadHardware();
-    loadGames();
-
-    // 监听游戏启动/退出事件
-    const unsub1 = onGameDetected((game) => {
-      setRunningGames((prev) => [...prev, game]);
-    });
-    const unsub2 = onGameExited((name) => {
-      setRunningGames((prev) => prev.filter((g) => g.process_name !== name));
-    });
-
-    // 定期刷新游戏列表
-    const interval = setInterval(loadGames, 10000);
-
-    return () => {
-      unsub1.then((fn) => fn());
-      unsub2.then((fn) => fn());
-      clearInterval(interval);
-    };
-  }, []);
-
+export default function Dashboard({
+  hardware,
+  hardwareLoading,
+  hardwareError,
+  runningGames,
+  onRefreshHardware,
+}: DashboardProps) {
   return (
     <div className="p-6 space-y-6">
       {/* 标题栏 */}
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-white">硬件概览</h1>
         <button
-          onClick={loadHardware}
-          disabled={loading}
+          onClick={onRefreshHardware}
+          disabled={hardwareLoading}
           className="flex items-center gap-2 px-3 py-1.5 text-xs rounded-lg bg-surface-card border border-border text-slate-400 hover:text-white hover:border-brand-600/50 transition-colors disabled:opacity-50"
         >
-          {loading ? (
+          {hardwareLoading ? (
             <Loader2 size={14} className="animate-spin" />
           ) : (
             <RefreshCw size={14} />
@@ -72,13 +35,13 @@ export default function Dashboard() {
         </button>
       </div>
 
-      {error && (
+      {hardwareError && (
         <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
-          检测失败: {error}
+          检测失败: {hardwareError}
         </div>
       )}
 
-      {loading && !hardware && (
+      {hardwareLoading && !hardware && (
         <div className="flex items-center justify-center py-20 text-slate-500">
           <Loader2 size={24} className="animate-spin mr-3" />
           正在检测硬件配置...

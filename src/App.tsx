@@ -1,19 +1,76 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Dashboard from "./pages/Dashboard";
 import FpsMonitor from "./pages/FpsMonitor";
 import Settings from "./pages/Settings";
-import { Monitor, Gauge, Settings as SettingsIcon, Gamepad2 } from "lucide-react";
+import Logs from "./pages/Logs";
+import { Monitor, Gauge, Settings as SettingsIcon, Gamepad2, FileText } from "lucide-react";
+import { detectHardware, scanRunningGames, onGameDetected, onGameExited } from "./lib/tauri-api";
+import type { HardwareInfo, DetectedGame } from "./lib/types";
 
-type Page = "dashboard" | "fps" | "settings";
+type Page = "dashboard" | "fps" | "settings" | "logs";
 
 const NAV_ITEMS: { id: Page; label: string; icon: React.ReactNode }[] = [
   { id: "dashboard", label: "硬件概览", icon: <Monitor size={20} /> },
   { id: "fps", label: "FPS 监测", icon: <Gauge size={20} /> },
+  { id: "logs", label: "运行日志", icon: <FileText size={20} /> },
   { id: "settings", label: "设置", icon: <SettingsIcon size={20} /> },
 ];
 
 export default function App() {
   const [page, setPage] = useState<Page>("dashboard");
+
+  // 硬件状态（提升到 App 层，避免切换 tab 时重新检测）
+  const [hardware, setHardware] = useState<HardwareInfo | null>(null);
+  const [hardwareLoading, setHardwareLoading] = useState(true);
+  const [hardwareError, setHardwareError] = useState<string | null>(null);
+  const [runningGames, setRunningGames] = useState<DetectedGame[]>([]);
+
+  // 加载硬件信息
+  const loadHardware = useCallback(async () => {
+    setHardwareLoading(true);
+    setHardwareError(null);
+    try {
+      const hw = await detectHardware();
+      setHardware(hw);
+    } catch (e) {
+      setHardwareError(String(e));
+    } finally {
+      setHardwareLoading(false);
+    }
+  }, []);
+
+  // 加载游戏列表
+  const loadGames = useCallback(async () => {
+    try {
+      const games = await scanRunningGames();
+      setRunningGames(games);
+    } catch (_e) {
+      // 静默失败
+    }
+  }, []);
+
+  // 初始化：只执行一次
+  useEffect(() => {
+    loadHardware();
+    loadGames();
+
+    // 监听游戏启动/退出事件
+    const unsub1 = onGameDetected((game) => {
+      setRunningGames((prev) => [...prev, game]);
+    });
+    const unsub2 = onGameExited((name) => {
+      setRunningGames((prev) => prev.filter((g) => g.process_name !== name));
+    });
+
+    // 定期刷新游戏列表
+    const interval = setInterval(loadGames, 10000);
+
+    return () => {
+      unsub1.then((fn) => fn());
+      unsub2.then((fn) => fn());
+      clearInterval(interval);
+    };
+  }, [loadHardware, loadGames]);
 
   return (
     <div className="flex h-screen bg-surface">
@@ -51,14 +108,23 @@ export default function App() {
 
         {/* 版本信息 */}
         <div className="px-5 py-3 border-t border-border text-[10px] text-slate-600">
-          v0.1.0 · PresentMon 2.x
+          v0.1.1 · PresentMon 2.x
         </div>
       </aside>
 
       {/* 主内容区 */}
       <main className="flex-1 overflow-y-auto">
-        {page === "dashboard" && <Dashboard />}
+        {page === "dashboard" && (
+          <Dashboard
+            hardware={hardware}
+            hardwareLoading={hardwareLoading}
+            hardwareError={hardwareError}
+            runningGames={runningGames}
+            onRefreshHardware={loadHardware}
+          />
+        )}
         {page === "fps" && <FpsMonitor />}
+        {page === "logs" && <Logs />}
         {page === "settings" && <Settings />}
       </main>
     </div>

@@ -104,15 +104,30 @@ fn clean_cpu_name(raw: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn detect_gpu_info() -> Vec<GpuInfo> {
-    use std::collections::HashMap;
+    log::info!("开始 GPU 检测...");
 
+    // 方案1: WMI 查询
     match detect_gpu_wmi() {
-        Ok(gpus) => gpus,
-        Err(e) => {
-            log::warn!("WMI GPU 检测失败: {}, 使用备用方案", e);
-            detect_gpu_fallback()
+        Ok(gpus) if !gpus.is_empty() => {
+            log::info!("WMI 检测到 {} 个 GPU", gpus.len());
+            return gpus;
         }
+        Ok(_) => log::warn!("WMI 返回空结果，尝试备用方案"),
+        Err(e) => log::warn!("WMI GPU 检测失败: {}, 使用备用方案", e),
     }
+
+    // 方案2: PowerShell 查询（更可靠）
+    match detect_gpu_powershell() {
+        Ok(gpus) if !gpus.is_empty() => {
+            log::info!("PowerShell 检测到 {} 个 GPU", gpus.len());
+            return gpus;
+        }
+        Ok(_) => log::warn!("PowerShell 返回空结果"),
+        Err(e) => log::warn!("PowerShell 检测失败: {}", e),
+    }
+
+    log::error!("所有 GPU 检测方案均失败");
+    vec![]
 }
 
 #[cfg(target_os = "windows")]
@@ -129,18 +144,35 @@ fn detect_gpu_wmi() -> Result<Vec<GpuInfo>, Box<dyn std::error::Error>> {
                         CurrentHorizontalResolution, CurrentVerticalResolution \
                         FROM Win32_VideoController")?;
 
+    log::info!("WMI 查询返回 {} 个视频控制器", results.len());
+
     let mut gpus = Vec::new();
-    for item in results {
+    for (idx, item) in results.iter().enumerate() {
         let name = match item.get("Name") {
-            Some(wmi::Variant::String(s)) => s.clone(),
-            _ => continue,
+            Some(wmi::Variant::String(s)) => {
+                log::info!("  [{}] GPU 名称: {}", idx, s);
+                s.clone()
+            }
+            _ => {
+                log::warn!("  [{}] 无法获取 GPU 名称", idx);
+                continue;
+            }
         };
+
+        // 跳过 Microsoft Basic Display Adapter 等虚拟设备
+        if name.contains("Microsoft") || name.contains("Basic") || name.contains("Remote") {
+            log::info!("  [{}] 跳过虚拟设备: {}", idx, name);
+            continue;
+        }
 
         // AdapterRAM 返回 bytes
         let vram_bytes: u64 = match item.get("AdapterRAM") {
             Some(wmi::Variant::UI4(n)) => *n as u64,
             Some(wmi::Variant::I4(n)) => *n as u64,
-            _ => 0,
+            _ => {
+                log::warn!("  [{}] 无法获取显存信息", idx);
+                0
+            }
         };
         let vram_gb = vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
 
@@ -163,10 +195,7 @@ fn detect_gpu_wmi() -> Result<Vec<GpuInfo>, Box<dyn std::error::Error>> {
             "Unknown".to_string()
         };
 
-        // 跳过 Microsoft Basic Display Adapter 等虚拟设备
-        if name.contains("Microsoft") || name.contains("Basic") {
-            continue;
-        }
+        log::info!("  [{}] 添加 GPU: {} ({:.1} GB)", idx, name, vram_gb);
 
         gpus.push(GpuInfo {
             name,
@@ -179,15 +208,71 @@ fn detect_gpu_wmi() -> Result<Vec<GpuInfo>, Box<dyn std::error::Error>> {
     Ok(gpus)
 }
 
+/// 使用 PowerShell 作为备用方案检测 GPU
 #[cfg(target_os = "windows")]
-fn detect_gpu_fallback() -> Vec<GpuInfo> {
-    // 备用方案：通过 DXGI 或 systeminfo 命令行
-    vec![GpuInfo {
-        name: "检测中...".to_string(),
-        vram_gb: 0.0,
-        driver_version: "Unknown".to_string(),
-        resolution: "Unknown".to_string(),
-    }]
+fn detect_gpu_powershell() -> Result<Vec<GpuInfo>, Box<dyn std::error::Error>> {
+    use std::process::Command;
+
+    log::info!("尝试 PowerShell GPU 检测...");
+
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-WmiObject Win32_VideoController | Select-Object Name, DriverVersion, AdapterRAM, CurrentHorizontalResolution, CurrentVerticalResolution | ConvertTo-Json"
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        return Err("PowerShell 命令失败".into());
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    log::info!("PowerShell 输出: {}", json_str);
+
+    // 简单解析 JSON（如果有多个 GPU，会是数组）
+    let mut gpus = Vec::new();
+
+    // 尝试解析为单个对象或数组
+    let parsed: serde_json::Value = serde_json::from_str(&json_str)
+        .map_err(|e| format!("JSON 解析失败: {}", e))?;
+
+    let items = if parsed.is_array() {
+        parsed.as_array().unwrap().clone()
+    } else {
+        vec![parsed]
+    };
+
+    for item in items {
+        let name = item["Name"].as_str().unwrap_or("Unknown GPU");
+        let driver = item["DriverVersion"].as_str().unwrap_or("Unknown");
+
+        // AdapterRAM 在 JSON 中可能是数字
+        let vram_bytes = item["AdapterRAM"].as_u64().unwrap_or(0);
+        let vram_gb = vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+
+        let h_res = item["CurrentHorizontalResolution"].as_u64().unwrap_or(0) as u32;
+        let v_res = item["CurrentVerticalResolution"].as_u64().unwrap_or(0) as u32;
+        let resolution = if h_res > 0 && v_res > 0 {
+            format!("{}x{}", h_res, v_res)
+        } else {
+            "Unknown".to_string()
+        };
+
+        // 跳过虚拟设备
+        if name.contains("Microsoft") || name.contains("Basic") || name.contains("Remote") {
+            continue;
+        }
+
+        gpus.push(GpuInfo {
+            name: name.to_string(),
+            vram_gb: (vram_gb * 10.0).round() / 10.0,
+            driver_version: driver.to_string(),
+            resolution,
+        });
+    }
+
+    Ok(gpus)
 }
 
 #[cfg(not(target_os = "windows"))]
