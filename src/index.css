@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: "Microsoft YaHei", "PingFang SC", -apple-system, sans-serif;
+  color: #e2e8f0;
+  background-color: #0f1724;
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+/* Tauri 窗口拖动区域 */
+[data-tauri-drag-region] {
+  cursor: move;
+  -webkit-app-region: drag;
+}
