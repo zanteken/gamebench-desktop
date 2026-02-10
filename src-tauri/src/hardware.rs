@@ -136,17 +136,10 @@ fn detect_gpu_wmi() -> Result<Vec<GpuInfo>, Box<dyn std::error::Error>> {
             _ => continue,
         };
 
-        // AdapterRAM 返回 bytes (u32, 最大 4GB; 超过时可能溢出)
-        let vram_bytes = match item.get("AdapterRAM") {
+        // AdapterRAM 返回 bytes
+        let vram_bytes: u64 = match item.get("AdapterRAM") {
             Some(wmi::Variant::UI4(n)) => *n as u64,
-            Some(wmi::Variant::I4(n)) => {
-                if *n < 0 {
-                    // 负值意味着超过 2GB，需要特殊处理
-                    (*n as u32) as u64
-                } else {
-                    *n as u64
-                }
-            }
+            Some(wmi::Variant::I4(n)) => *n as u64,
             _ => 0,
         };
         let vram_gb = vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
@@ -230,7 +223,7 @@ fn detect_ram_info() -> RamInfo {
 fn detect_os() -> String {
     let name = System::name().unwrap_or_else(|| "Unknown".to_string());
     let version = System::os_version().unwrap_or_else(|| "".to_string());
-    let arch = System::cpu_arch().unwrap_or_else(|| "".to_string());
+    let arch = System::cpu_arch();
     format!("{} {} ({})", name, version, arch)
 }
 
